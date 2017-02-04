@@ -47,8 +47,13 @@ class RGBmatrixPanel : public Adafruit_GFX {
 	    uint8_t width);
 
   // PORT register pointers, pin bitmasks, pin numbers:
+#ifdef _VARIANT_FREEDOM_E300_
+  volatile uint32_t
+#else
   volatile uint8_t
+#endif
     *latport, *oeport, *addraport, *addrbport, *addrcport, *addrdport;
+
   uint8_t
     sclkpin, latpin, oepin, addrapin, addrbpin, addrcpin, addrdpin,
     _sclk, _latch, _oe, _a, _b, _c, _d;

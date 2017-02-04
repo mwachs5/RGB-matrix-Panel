@@ -10,10 +10,17 @@
 #define OE   9
 #define LAT 10
 #define CLK 11
+#ifdef _VARIANT_FREEDOM_E300_
+#define A   15
+#define B   16
+#define C   17
+#define D   18
+#else
 #define A   A0
 #define B   A1
 #define C   A2
 #define D   A3
+#endif
 
 RGBmatrixPanel matrix(A, B, C, D, CLK, LAT, OE, false, 64);
 

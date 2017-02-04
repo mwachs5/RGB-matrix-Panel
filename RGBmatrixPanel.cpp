@@ -34,7 +34,7 @@ BSD license, all text above must be included in any redistribution.
 */
 
 #include "RGBmatrixPanel.h"
-#include "gamma.h"
+#include "gamma_ada.h"
 
 #ifndef _swap_int16_t
 #define _swap_int16_t(a, b) { int16_t t = a; a = b; b = t; }
@@ -46,7 +46,22 @@ BSD license, all text above must be included in any redistribution.
 // For similar reasons, the clock pin is only semi-configurable...it can
 // be specified as any pin within a specific PORT register stated below.
 
-#if defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
+#if defined(_VARIANT_FREEDOM_E300_)
+#define DATAPORT (GPIO_REG(GPIO_OUTPUT_VAL))
+#define DATADIR  (GPIO_REG(GPIO_OUTPUT_EN))
+#define SCLKPORT (GPIO_REG(GPIO_OUTPUT_VAL))
+#define R0_MASK  digitalPinToBitMask(2)
+#define R1_MASK  digitalPinToBitMask(5)
+#define G0_MASK  digitalPinToBitMask(3)
+#define G1_MASK  digitalPinToBitMask(6)
+#define B0_MASK  digitalPinToBitMask(4)
+#define B1_MASK  digitalPinToBitMask(7)
+
+void pwmISR( void );
+
+#include "encoding.h"
+
+#elif defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
  // Arduino Mega is now tested and confirmed, with the following caveats:
  // Because digital pins 2-7 don't map to a contiguous port register,
  // the Mega requires connecting the matrix data lines to different pins.
@@ -170,6 +185,25 @@ void RGBmatrixPanel::begin(void) {
     pinMode(_d  , OUTPUT); *addrdport &= ~addrdpin; // Low
   }
 
+#ifdef _VARIANT_FREEDOM_E300_
+  
+  DATADIR  |=  (R0_MASK | R1_MASK | G0_MASK | G1_MASK | B0_MASK | B1_MASK); 
+  DATAPORT &= ~(R0_MASK | R1_MASK | G0_MASK | G1_MASK | B0_MASK | B1_MASK);
+
+  // Set up PWM0 For Interrupt
+  PWM0_REG(PWM_CFG) = PWM_CFG_STICKY | PWM_CFG_ZEROCMP | PWM_CFG_ENALWAYS | 6;
+  PWM0_REG(PWM_CMP0) = 160;
+  PWM0_REG(PWM_CMP1) = 0xFF;
+  PWM0_REG(PWM_CMP2) = 0xFF;
+  PWM0_REG(PWM_CMP3) = 0xFF;
+
+  attachInterrupt(INT_PWM0_BASE, pwmISR, /* mode is N/A for non GPIO pins*/ 0);
+
+  //enable interrupts.
+  set_csr(mstatus, MSTATUS_MIE);
+  
+#else
+  
   // The high six bits of the data port are set as outputs;
   // Might make this configurable in the future, but not yet.
   DATADIR  = B11111100;
@@ -181,6 +215,8 @@ void RGBmatrixPanel::begin(void) {
   ICR1    = 100;
   TIMSK1 |= _BV(TOIE1); // Enable Timer1 interrupt
   sei();                // Enable global interrupts
+#endif
+  
 }
 
 // Original RGBmatrixPanel library used 3/3/3 color.  Later version used
@@ -217,9 +253,9 @@ uint16_t RGBmatrixPanel::Color888(uint8_t r, uint8_t g, uint8_t b) {
 uint16_t RGBmatrixPanel::Color888(
   uint8_t r, uint8_t g, uint8_t b, boolean gflag) {
   if(gflag) { // Gamma-corrected color?
-    r = pgm_read_byte(&gamma[r]); // Gamma correction table maps
-    g = pgm_read_byte(&gamma[g]); // 8-bit input to 4-bit output
-    b = pgm_read_byte(&gamma[b]);
+    r = pgm_read_byte(&gamma_ada[r]); // Gamma correction table maps
+    g = pgm_read_byte(&gamma_ada[g]); // 8-bit input to 4-bit output
+    b = pgm_read_byte(&gamma_ada[b]);
     return ((uint16_t)r << 12) | ((uint16_t)(r & 0x8) << 8) | // 4/4/4->5/6/5
            ((uint16_t)g <<  7) | ((uint16_t)(g & 0xC) << 3) |
            (          b <<  1) | (           b        >> 3);
@@ -258,9 +294,9 @@ uint16_t RGBmatrixPanel::ColorHSV(
   // to allow shifts, and upgrade to int makes other conversions implicit.
   v1 = val + 1;
   if(gflag) { // Gamma-corrected color?
-    r = pgm_read_byte(&gamma[(r * v1) >> 8]); // Gamma correction table maps
-    g = pgm_read_byte(&gamma[(g * v1) >> 8]); // 8-bit input to 4-bit output
-    b = pgm_read_byte(&gamma[(b * v1) >> 8]);
+    r = pgm_read_byte(&gamma_ada[(r * v1) >> 8]); // Gamma correction table maps
+    g = pgm_read_byte(&gamma_ada[(g * v1) >> 8]); // 8-bit input to 4-bit output
+    b = pgm_read_byte(&gamma_ada[(b * v1) >> 8]);
   } else { // linear (uncorrected) color
     r = (r * v1) >> 12; // 4-bit results
     g = (g * v1) >> 12;
@@ -402,10 +438,19 @@ void RGBmatrixPanel::dumpMatrix(void) {
 
 // -------------------- Interrupt handler stuff --------------------
 
+#ifdef _VARIANT_FREEDOM_E300_
+void pwmISR( void ) {
+  
+  activePanel->updateDisplay();
+  PWM0_REG(PWM_CFG) &= ~PWM_CFG_CMP0IP;
+  
+}
+#else
 ISR(TIMER1_OVF_vect, ISR_BLOCK) { // ISR_BLOCK important -- see notes later
   activePanel->updateDisplay();   // Call refresh func for active display
   TIFR1 |= TOV1;                  // Clear Timer1 interrupt flag
 }
+#endif
 
 // Two constants are used in timing each successive BCM interval.
 // These were found empirically, by checking the value of TCNT1 at
@@ -505,8 +550,13 @@ void RGBmatrixPanel::updateDisplay(void) {
   // A local register copy can speed some things up:
   ptr = (uint8_t *)buffptr;
 
+#ifdef _VARIANT_FREEDOM_E300_
+  PWM1_REG(PWM_CMP0) = duration;
+#else
   ICR1      = duration; // Set interval for next interrupt
   TCNT1     = 0;        // Restart interrupt timer
+#endif
+  
   *oeport  &= ~oepin;   // Re-enable output
   *latport &= ~latpin;  // Latch down
 
@@ -527,6 +577,32 @@ void RGBmatrixPanel::updateDisplay(void) {
     // The least 2 bits (used for plane 0 data) are presumed masked out
     // by the port direction bits.
 
+#ifdef _VARIANT_FREEDOM_E300_
+    // We are running fast enough to not require these to be contiguous,
+    // but we let the code above go ahead and do that anyway.
+    uint8_t twopixels;
+    uint32_t base;
+    uint32_t color;
+    
+    base = GPIO_REG(GPIO_OUTPUT_VAL) & ~(R0_MASK | G0_MASK | B0_MASK | R1_MASK | G1_MASK | B1_MASK); 
+
+    for (int pew = 0; pew < WIDTH; pew ++) {
+      color = 0;					  
+      twopixels = *ptr;					  
+      if(twopixels & B00000100) color |= R0_MASK ; // Plane N R: bit 2
+      if(twopixels & B00001000) color |= G0_MASK ; // Plane N G: bit 3
+      if(twopixels & B00010000) color |= B0_MASK ; // Plane N B: bit 4
+      if(twopixels & B00100000) color |= R1_MASK ; // Plane N R: bit 2
+      if(twopixels & B01000000) color |= G1_MASK ; // Plane N G: bit 3
+      if(twopixels & B10000000) color |= B1_MASK ; // Plane N B: bit 4
+
+      GPIO_REG(GPIO_OUTPUT_VAL) = base | color;		  
+      GPIO_REG(GPIO_OUTPUT_VAL) = base | color | sclkpin; 
+      GPIO_REG(GPIO_OUTPUT_VAL) = base | color ;	  
+      ptr ++; 
+    }
+    
+#else
     // A tiny bit of inline assembly is used; compiler doesn't pick
     // up on opportunity for post-increment addressing mode.
     // 5 instruction ticks per 'pew' = 160 ticks total
@@ -554,10 +630,12 @@ void RGBmatrixPanel::updateDisplay(void) {
     pew pew pew pew pew pew pew pew
       }
 
+#endif
+    
     buffptr = ptr; //+= 32;
 
   } else { // 920 ticks from TCNT1=0 (above) to end of function
-
+   
     // Planes 1-3 (handled above) formatted their data "in place,"
     // their layout matching that out the output PORT register (where
     // 6 bits correspond to output data lines), maximizing throughput
@@ -567,13 +645,29 @@ void RGBmatrixPanel::updateDisplay(void) {
     // output for plane 0 is handled while plane 3 is being displayed...
     // because binary coded modulation is used (not PWM), that plane
     // has the longest display interval, so the extra work fits.
+    uint32_t base = GPIO_REG(GPIO_OUTPUT_VAL) & ~(R0_MASK | G0_MASK | B0_MASK | R1_MASK | G1_MASK | B1_MASK);
     for(i=0; i<WIDTH; i++) {
+      uint32_t color = 0;
+      if (ptr[WIDTH*2] &   B00000001) color |= R0_MASK; // Plane 0 R: 64 bytes ahead, bit 0
+      if (ptr[WIDTH*2] &   B00000010) color |= G0_MASK; // Plane 0 G: 64 bytes ahead, bit 1
+      if (ptr[WIDTH]   &   B00000001) color |= B0_MASK; // Plane 0 B: 32 bytes ahead, bit 0
+      if (ptr[WIDTH]   &   B00000010) color |= R1_MASK; // Plane 0 R: 32 bytes ahead, bit 1
+      if (ptr[0]       &   B00000001) color |= G1_MASK; // Plane 0 G: bit 0
+      if (ptr[0]       &   B00000010) color |= B1_MASK; // Plane 0 B: bit 0
+
+#ifdef _VARIANT_FREEDOM_E300_
+      GPIO_REG(GPIO_OUTPUT_VAL) = base | color;		  
+      GPIO_REG(GPIO_OUTPUT_VAL) = base | color | sclkpin; 
+      GPIO_REG(GPIO_OUTPUT_VAL) = base | color ;	  
+      ptr ++; 
+#else 
       DATAPORT =
         ( ptr[i]    << 6)         |
         ((ptr[i+WIDTH] << 4) & 0x30) |
         ((ptr[i+WIDTH*2] << 2) & 0x0C);
       SCLKPORT = tick; // Clock lo
       SCLKPORT = tock; // Clock hi
+#endif
     } 
   }
 }
