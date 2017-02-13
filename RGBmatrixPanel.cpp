@@ -191,7 +191,7 @@ void RGBmatrixPanel::begin(void) {
   DATAPORT &= ~(R0_MASK | R1_MASK | G0_MASK | G1_MASK | B0_MASK | B1_MASK);
 
   // Set up PWM0 For Interrupt
-  PWM0_REG(PWM_CFG) = PWM_CFG_STICKY | PWM_CFG_ZEROCMP | PWM_CFG_ENALWAYS | 6;
+  PWM0_REG(PWM_CFG) = PWM_CFG_ZEROCMP | PWM_CFG_STICKY | PWM_CFG_ONESHOT;// | PWM_CFG_ENALWAYS;// | 6;
   PWM0_REG(PWM_CMP0) = 160;
   PWM0_REG(PWM_CMP1) = 0xFF;
   PWM0_REG(PWM_CMP2) = 0xFF;
@@ -442,8 +442,14 @@ void RGBmatrixPanel::dumpMatrix(void) {
 void pwmISR( void ) {
   
   activePanel->updateDisplay();
+
+  // Clear current interrupt
   PWM0_REG(PWM_CFG) &= ~PWM_CFG_CMP0IP;
-  
+
+  // Re-enable the interrupt (CMP0 value was set as duration in updateDisplay).
+  // This starts the timer counting.
+  PWM0_REG(PWM_CFG) = PWM_CFG_ZEROCMP | PWM_CFG_STICKY | PWM_CFG_ONESHOT;// | PWM_CFG_ENALWAYS;// | 6;
+
 }
 #else
 ISR(TIMER1_OVF_vect, ISR_BLOCK) { // ISR_BLOCK important -- see notes later
@@ -551,7 +557,8 @@ void RGBmatrixPanel::updateDisplay(void) {
   ptr = (uint8_t *)buffptr;
 
 #ifdef _VARIANT_FREEDOM_E300_
-  PWM1_REG(PWM_CMP0) = duration;
+  // Set time for next interrupt
+  PWM0_REG(PWM_CMP0) = duration;
 #else
   ICR1      = duration; // Set interval for next interrupt
   TCNT1     = 0;        // Restart interrupt timer
@@ -597,8 +604,8 @@ void RGBmatrixPanel::updateDisplay(void) {
       if(twopixels & B10000000) color |= B1_MASK ; // Plane N B: bit 4
 
       GPIO_REG(GPIO_OUTPUT_VAL) = base | color;		  
-      GPIO_REG(GPIO_OUTPUT_VAL) = base | color | sclkpin; 
-      GPIO_REG(GPIO_OUTPUT_VAL) = base | color ;	  
+      GPIO_REG(GPIO_OUTPUT_VAL) = base | color | sclkpin; //tick
+      GPIO_REG(GPIO_OUTPUT_VAL) = base | color ;	  //tock
       ptr ++; 
     }
     
@@ -657,8 +664,8 @@ void RGBmatrixPanel::updateDisplay(void) {
 
 #ifdef _VARIANT_FREEDOM_E300_
       GPIO_REG(GPIO_OUTPUT_VAL) = base | color;		  
-      GPIO_REG(GPIO_OUTPUT_VAL) = base | color | sclkpin; 
-      GPIO_REG(GPIO_OUTPUT_VAL) = base | color ;	  
+      GPIO_REG(GPIO_OUTPUT_VAL) = base | color | sclkpin; //tick
+      GPIO_REG(GPIO_OUTPUT_VAL) = base | color ;	  //tock
       ptr ++; 
 #else 
       DATAPORT =
